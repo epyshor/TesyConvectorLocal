@@ -58,6 +58,14 @@
     }
   },
   "entity": {
+    "number": {
+      "target_temperature": {
+        "name": "Target Temperature"
+      },
+      "temperature_correction": {
+        "name": "Temperature Calibration"
+      }
+    },
     "switch": {
       "boost": {
         "name": "Boost Mode"

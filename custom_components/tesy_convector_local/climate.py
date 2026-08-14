@@ -9,6 +9,7 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACMode,
 )
+from homeassistant.components.climate.const import ATTR_HVAC_MODE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_TEMPERATURE,
@@ -70,7 +71,8 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
         super().__init__(coordinator)
         self.entry = entry
         self._attr_unique_id = f"{entry.entry_id}_climate"
-        
+        self._last_target_temp: float = 21.0
+
         device_name = coordinator.data.get("name") or coordinator.device_name
         model_name = coordinator.data.get("model", "Convector Heater")
         sw_version = str(coordinator.data.get("sw_version", "1.0"))
@@ -115,16 +117,20 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
             current = self.coordinator.data.get("current_temp")
             if current is not None:
                 return current
-            return self.coordinator.data.get("target_temp")
+            return self.target_temperature
 
         return None
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the target temperature."""
+        """Return the target temperature (always available, even when off)."""
         if self.coordinator.data:
-            return self.coordinator.data.get("target_temp")
-        return None
+            val = self.coordinator.data.get("target_temp")
+            if val is not None:
+                self._last_target_temp = float(val)
+                return float(val)
+
+        return self._last_target_temp
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target HVAC mode."""
@@ -144,9 +150,16 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
         await self.coordinator.async_turn_off()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set new target temperature."""
+        """Set new target temperature, even if device is currently off."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
+
+        self._last_target_temp = float(temperature)
+
+        # If HA also passes hvac_mode in kwargs, handle it
+        hvac_mode = kwargs.get(ATTR_HVAC_MODE)
+        if hvac_mode:
+            await self.async_set_hvac_mode(hvac_mode)
 
         await self.coordinator.async_set_temperature(temperature)

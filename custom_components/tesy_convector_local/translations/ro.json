@@ -58,6 +58,14 @@
     }
   },
   "entity": {
+    "number": {
+      "target_temperature": {
+        "name": "Temperatură Țintă"
+      },
+      "temperature_correction": {
+        "name": "Calibrare Temperatură"
+      }
+    },
     "switch": {
       "boost": {
         "name": "Mod Boost"
