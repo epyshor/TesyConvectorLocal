@@ -1,4 +1,4 @@
-"""Sensor platform for Tesy Convector."""
+"""Sensor platform for Tesy Convector (Cloud & Local)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,6 +40,14 @@ SENSOR_DESCRIPTIONS: tuple[TesySensorEntityDescription, ...] = (
         icon="mdi:tune",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.get("mode"),
+    ),
+    TesySensorEntityDescription(
+        key="heater_state",
+        translation_key="heater_state",
+        name="Heating State",
+        icon="mdi:radiator",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.get("heater_state"),
     ),
     TesySensorEntityDescription(
         key="internal_temperature",
@@ -87,13 +95,18 @@ class TesyConvectorSensor(CoordinatorEntity[TesyDataUpdateCoordinator], SensorEn
         self.entity_description = description
         self.entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+
+        device_name = coordinator.data.get("name") or coordinator.device_name
+        model_name = coordinator.data.get("model", "Convector Heater")
+        sw_version = str(coordinator.data.get("sw_version", "1.0"))
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name=f"{DEFAULT_NAME} ({coordinator.ip_address})",
+            name=device_name,
             manufacturer="Tesy",
-            model=coordinator.data.get("model", "Convector Heater"),
-            sw_version=str(coordinator.data.get("sw_version") or "Local API"),
-            configuration_url=f"http://{coordinator.ip_address}",
+            model=model_name,
+            sw_version=sw_version,
+            configuration_url=f"http://{coordinator.device_id}" if not coordinator.is_cloud else "https://mytesy.com",
         )
 
     @property

@@ -2,8 +2,32 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Tesy Convector",
-        "description": "Enter the IP address of your Tesy convector and optional external temperature sensor.",
+        "title": "Select Connection Type",
+        "description": "Choose how you want to connect to your Tesy Convector.",
+        "data": {
+          "auth_type": "Connection Method"
+        }
+      },
+      "cloud": {
+        "title": "MyTESY Cloud Login (mytesy.com)",
+        "description": "Enter your MyTESY account credentials.",
+        "data": {
+          "username": "Email / Username",
+          "password": "Password",
+          "user_id": "User ID (Optional - leave empty to auto-detect)",
+          "temperature_entity": "External Temperature Sensor (Optional)"
+        }
+      },
+      "select_device": {
+        "title": "Select Your Tesy Device",
+        "description": "Choose the convector you want to add to Home Assistant from your MyTESY account.",
+        "data": {
+          "device_id": "Device"
+        }
+      },
+      "local": {
+        "title": "Local IP Connection",
+        "description": "Enter the IP address of your Tesy convector on your local network.",
         "data": {
           "ip_address": "IP Address",
           "temperature_entity": "External Temperature Sensor (Optional)"
@@ -11,8 +35,10 @@
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect to the convector. Check the IP address and make sure the convector is turned on and connected to Wi-Fi.",
-      "invalid_response": "The device returned an unexpected response format.",
+      "cannot_connect": "Failed to connect. Check internet connection / IP address.",
+      "invalid_auth": "Invalid email or password for MyTESY Cloud.",
+      "no_devices": "No devices found on this MyTESY account.",
+      "invalid_response": "The device or cloud returned an unexpected response format.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
@@ -33,6 +59,9 @@
   },
   "entity": {
     "switch": {
+      "boost": {
+        "name": "Boost Mode"
+      },
       "lock_device": {
         "name": "Child Lock"
       },
@@ -52,6 +81,9 @@
     "sensor": {
       "mode": {
         "name": "Operating Mode"
+      },
+      "heater_state": {
+        "name": "Heating State"
       },
       "internal_temperature": {
         "name": "Internal Temperature"

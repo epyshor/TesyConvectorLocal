@@ -1,4 +1,4 @@
-"""Climate platform for Tesy Convector."""
+"""Climate platform for Tesy Convector (Cloud & Local)."""
 from __future__ import annotations
 
 import logging
@@ -9,9 +9,7 @@ from homeassistant.components.climate import (
     ClimateEntityFeature,
     HVACMode,
 )
-from homeassistant.components.climate.const import (
-    ATTR_TEMPERATURE,
-)
+from homeassistant.components.climate.const import ATTR_TEMPERATURE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     STATE_UNAVAILABLE,
@@ -50,7 +48,7 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
     """Representation of a Tesy Convector Climate Entity."""
 
     _attr_has_entity_name = True
-    _attr_name = None  # Primary entity takes device name
+    _attr_name = None  # Inherits device name
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_min_temp = MIN_TEMP
     _attr_max_temp = MAX_TEMP
@@ -72,13 +70,18 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
         super().__init__(coordinator)
         self.entry = entry
         self._attr_unique_id = f"{entry.entry_id}_climate"
+        
+        device_name = coordinator.data.get("name") or coordinator.device_name
+        model_name = coordinator.data.get("model", "Convector Heater")
+        sw_version = str(coordinator.data.get("sw_version", "1.0"))
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name=f"{DEFAULT_NAME} ({coordinator.ip_address})",
+            name=device_name,
             manufacturer="Tesy",
-            model=coordinator.data.get("model", "Convector Heater"),
-            sw_version=str(coordinator.data.get("sw_version") or "Local API"),
-            configuration_url=f"http://{coordinator.ip_address}",
+            model=model_name,
+            sw_version=sw_version,
+            configuration_url=f"http://{coordinator.device_id}" if not coordinator.is_cloud else "https://mytesy.com",
         )
 
     @property
@@ -108,7 +111,6 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
                 except (ValueError, TypeError):
                     _LOGGER.warning("Could not convert external temp sensor state %s to float", state.state)
 
-        # Fallback to device reported current temp or target temp
         if self.coordinator.data:
             current = self.coordinator.data.get("current_temp")
             if current is not None:
@@ -119,7 +121,7 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
 
     @property
     def target_temperature(self) -> float | None:
-        """Return the temperature we try to reach."""
+        """Return the target temperature."""
         if self.coordinator.data:
             return self.coordinator.data.get("target_temp")
         return None
@@ -127,24 +129,19 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new target HVAC mode."""
         if hvac_mode == HVACMode.HEAT:
-            await self.coordinator.api.async_turn_on()
+            await self.coordinator.async_turn_on()
         elif hvac_mode == HVACMode.OFF:
-            await self.coordinator.api.async_turn_off()
+            await self.coordinator.async_turn_off()
         else:
             _LOGGER.error("Unsupported HVAC mode: %s", hvac_mode)
-            return
-
-        await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         """Turn on the convector (Heat mode)."""
-        await self.coordinator.api.async_turn_on()
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_turn_on()
 
     async def async_turn_off(self) -> None:
         """Turn off the convector."""
-        await self.coordinator.api.async_turn_off()
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_turn_off()
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
@@ -152,5 +149,4 @@ class TesyConvectorClimate(CoordinatorEntity[TesyDataUpdateCoordinator], Climate
         if temperature is None:
             return
 
-        await self.coordinator.api.async_set_temperature(temperature)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_temperature(temperature)

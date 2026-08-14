@@ -2,8 +2,32 @@
   "config": {
     "step": {
       "user": {
-        "title": "Conectare la Convectorul Tesy",
-        "description": "Introdu adresa IP a convectorului Tesy și opțional un senzor extern de temperatură.",
+        "title": "Alege Tipul de Conexiune",
+        "description": "Selectează modul în care dorești să te conectezi la convectorul Tesy.",
+        "data": {
+          "auth_type": "Metodă de Conectare"
+        }
+      },
+      "cloud": {
+        "title": "Autentificare MyTESY Cloud (mytesy.com)",
+        "description": "Introdu datele contului tău MyTESY.",
+        "data": {
+          "username": "Email / Utilizator",
+          "password": "Parolă",
+          "user_id": "ID Utilizator (Opțional - lăsați gol pentru detectare automată)",
+          "temperature_entity": "Senzor Extern de Temperatură (Opțional)"
+        }
+      },
+      "select_device": {
+        "title": "Selectează Convectorul Tesy",
+        "description": "Alege dispozitivul pe care vrei să îl adaugi în Home Assistant din contul tău MyTESY.",
+        "data": {
+          "device_id": "Dispozitiv"
+        }
+      },
+      "local": {
+        "title": "Conectare Directă prin IP Local",
+        "description": "Introdu adresa IP a convectorului din rețeaua locală.",
         "data": {
           "ip_address": "Adresă IP",
           "temperature_entity": "Senzor Extern de Temperatură (Opțional)"
@@ -11,8 +35,10 @@
       }
     },
     "error": {
-      "cannot_connect": "Conectarea la convector a eșuat. Verifică adresa IP și asigură-te că aparatul este pornit și conectat la Wi-Fi.",
-      "invalid_response": "Dispozitivul a returnat un răspuns invalid.",
+      "cannot_connect": "Conectarea a eșuat. Verifică conexiunea la internet / adresa IP.",
+      "invalid_auth": "Email sau parolă incorectă pentru MyTESY Cloud.",
+      "no_devices": "Nu a fost găsit niciun convector în contul MyTESY.",
+      "invalid_response": "Dispozitivul sau cloud-ul a returnat un răspuns invalid.",
       "unknown": "A apărut o eroare neașteptată."
     },
     "abort": {
@@ -33,6 +59,9 @@
   },
   "entity": {
     "switch": {
+      "boost": {
+        "name": "Mod Boost"
+      },
       "lock_device": {
         "name": "Blocare Tastatură (Child Lock)"
       },
@@ -52,6 +81,9 @@
     "sensor": {
       "mode": {
         "name": "Mod de Lucru"
+      },
+      "heater_state": {
+        "name": "Stare Încălzire"
       },
       "internal_temperature": {
         "name": "Temperatură Internă"

@@ -1,4 +1,4 @@
-"""The Tesy Convector Local integration."""
+"""The Tesy Convector integration (Cloud & Local)."""
 from __future__ import annotations
 
 import logging
@@ -7,11 +7,20 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_IP_ADDRESS, DOMAIN, PLATFORMS
+from .const import (
+    AUTH_TYPE_CLOUD,
+    CONF_AUTH_TYPE,
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_USER_ID,
+    CONF_USERNAME,
+    DOMAIN,
+    PLATFORMS,
+)
 from .coordinator import TesyDataUpdateCoordinator
+from .tesy_cloud import TesyCloudClient
 from .tesy_convector import TesyConvector
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,8 +44,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         coordinators: dict[str, TesyDataUpdateCoordinator] = hass.data.get(DOMAIN, {})
         for coordinator in coordinators.values():
             if isinstance(coordinator, TesyDataUpdateCoordinator):
-                await coordinator.api.async_set_temperature_correction(correction)
-                await coordinator.async_request_refresh()
+                await coordinator.async_set_temperature_correction(correction)
 
     if not hass.services.has_service(DOMAIN, SERVICE_SET_TEMPERATURE_CORRECTION):
         hass.services.async_register(
@@ -53,17 +61,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Tesy Convector from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    ip_address = entry.data[CONF_IP_ADDRESS]
     session = async_get_clientsession(hass)
-    api = TesyConvector(ip_address, session=session)
+    auth_type = entry.data.get(CONF_AUTH_TYPE, AUTH_TYPE_CLOUD if CONF_USERNAME in entry.data else "local")
 
-    coordinator = TesyDataUpdateCoordinator(hass, api, entry)
+    if auth_type == AUTH_TYPE_CLOUD or CONF_USERNAME in entry.data:
+        username = entry.data[CONF_USERNAME]
+        password = entry.data[CONF_PASSWORD]
+        userid = entry.data.get(CONF_USER_ID)
+        cloud_api = TesyCloudClient(username, password, userid=userid, session=session)
+        coordinator = TesyDataUpdateCoordinator(hass, entry, cloud_api=cloud_api)
+    else:
+        ip_address = entry.data.get(CONF_IP_ADDRESS, "")
+        local_api = TesyConvector(ip_address, session=session)
+        coordinator = TesyDataUpdateCoordinator(hass, entry, local_api=local_api)
 
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
-        _LOGGER.warning("Could not reach Tesy Convector at %s during initial setup: %s", ip_address, err)
-        raise ConfigEntryNotReady(f"Could not connect to Tesy Convector at {ip_address}: {err}") from err
+        _LOGGER.warning("Could not reach Tesy device during setup: %s", err)
+        raise ConfigEntryNotReady(f"Could not initialize Tesy device: {err}") from err
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
@@ -81,8 +97,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         coordinator: TesyDataUpdateCoordinator = hass.data[DOMAIN].pop(entry.entry_id, None)
-        if coordinator and coordinator.api:
-            await coordinator.api.async_close()
+        if coordinator:
+            if coordinator.local_api:
+                await coordinator.local_api.async_close()
+            if coordinator.cloud_api:
+                await coordinator.cloud_api.async_close()
 
     return unload_ok
 

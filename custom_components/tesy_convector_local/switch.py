@@ -1,4 +1,4 @@
-"""Switch platform for Tesy Convector."""
+"""Switch platform for Tesy Convector (Cloud & Local)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,7 +15,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DEFAULT_NAME, DOMAIN
 from .coordinator import TesyDataUpdateCoordinator
-from .tesy_convector import TesyConvector
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,10 +24,19 @@ class TesySwitchEntityDescription(SwitchEntityDescription):
     """Class describing Tesy switch entities."""
 
     is_on_fn: Callable[[dict[str, Any]], bool]
-    set_fn: Callable[[TesyConvector, bool], Coroutine[Any, Any, Any]]
+    set_fn: Callable[[TesyDataUpdateCoordinator, bool], Coroutine[Any, Any, Any]]
 
 
 SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
+    TesySwitchEntityDescription(
+        key="boost",
+        translation_key="boost",
+        name="Boost Mode",
+        icon="mdi:rocket-launch",
+        entity_category=EntityCategory.CONFIG,
+        is_on_fn=lambda data: bool(data.get("boost")),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_boost(enabled),
+    ),
     TesySwitchEntityDescription(
         key="lock_device",
         translation_key="lock_device",
@@ -36,7 +44,7 @@ SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
         icon="mdi:lock",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda data: bool(data.get("lock_device")),
-        set_fn=lambda api, enabled: api.async_set_lock_device(enabled),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_lock_device(enabled),
     ),
     TesySwitchEntityDescription(
         key="anti_frost",
@@ -45,7 +53,7 @@ SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
         icon="mdi:snowflake-alert",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda data: bool(data.get("anti_frost")),
-        set_fn=lambda api, enabled: api.async_set_anti_frost(enabled),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_anti_frost(enabled),
     ),
     TesySwitchEntityDescription(
         key="adaptive_start",
@@ -54,7 +62,7 @@ SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
         icon="mdi:timer-sand",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda data: bool(data.get("adaptive_start")),
-        set_fn=lambda api, enabled: api.async_set_adaptive_start(enabled),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_adaptive_start(enabled),
     ),
     TesySwitchEntityDescription(
         key="opened_window",
@@ -63,7 +71,7 @@ SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
         icon="mdi:window-open-variant",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda data: bool(data.get("opened_window")),
-        set_fn=lambda api, enabled: api.async_set_opened_window(enabled),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_opened_window(enabled),
     ),
     TesySwitchEntityDescription(
         key="uv",
@@ -72,7 +80,7 @@ SWITCH_DESCRIPTIONS: tuple[TesySwitchEntityDescription, ...] = (
         icon="mdi:weather-sunny-alert",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda data: bool(data.get("uv")),
-        set_fn=lambda api, enabled: api.async_set_uv(enabled),
+        set_fn=lambda coordinator, enabled: coordinator.async_set_uv(enabled),
     ),
 )
 
@@ -109,13 +117,18 @@ class TesyConvectorSwitch(CoordinatorEntity[TesyDataUpdateCoordinator], SwitchEn
         self.entity_description = description
         self.entry = entry
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+
+        device_name = coordinator.data.get("name") or coordinator.device_name
+        model_name = coordinator.data.get("model", "Convector Heater")
+        sw_version = str(coordinator.data.get("sw_version", "1.0"))
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
-            name=f"{DEFAULT_NAME} ({coordinator.ip_address})",
+            name=device_name,
             manufacturer="Tesy",
-            model=coordinator.data.get("model", "Convector Heater"),
-            sw_version=str(coordinator.data.get("sw_version") or "Local API"),
-            configuration_url=f"http://{coordinator.ip_address}",
+            model=model_name,
+            sw_version=sw_version,
+            configuration_url=f"http://{coordinator.device_id}" if not coordinator.is_cloud else "https://mytesy.com",
         )
 
     @property
@@ -127,10 +140,8 @@ class TesyConvectorSwitch(CoordinatorEntity[TesyDataUpdateCoordinator], SwitchEn
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the switch."""
-        await self.entity_description.set_fn(self.coordinator.api, True)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.set_fn(self.coordinator, True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the switch."""
-        await self.entity_description.set_fn(self.coordinator.api, False)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.set_fn(self.coordinator, False)

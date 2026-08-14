@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for Tesy Convector."""
+"""DataUpdateCoordinator for Tesy Convector (Cloud & Local)."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -9,14 +9,25 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL, DOMAIN
+from .const import (
+    AUTH_TYPE_CLOUD,
+    CONF_AUTH_TYPE,
+    CONF_DEVICE_ID,
+    CONF_DEVICE_NAME,
+    CONF_IP_ADDRESS,
+    CONF_UPDATE_INTERVAL,
+    DEFAULT_NAME,
+    DEFAULT_UPDATE_INTERVAL,
+    DOMAIN,
+)
+from .tesy_cloud import TesyCloudClient, TesyCloudError
 from .tesy_convector import TesyConvector, TesyError
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _extract_payload_val(container: Any, key: str, fallback: Any = None) -> Any:
-    """Helper to safely extract a nested payload value from Tesy's JSON structure."""
+    """Helper to safely extract a nested payload value from Tesy's local JSON structure."""
     if not isinstance(container, dict):
         return fallback
 
@@ -24,7 +35,6 @@ def _extract_payload_val(container: Any, key: str, fallback: Any = None) -> Any:
     if isinstance(item, dict):
         inner_payload = item.get("payload")
         if isinstance(inner_payload, dict):
-            # E.g. {"status": "on"} or {"temp": 22} or {"name": "manual"}
             if "status" in inner_payload:
                 return inner_payload["status"]
             if "temp" in inner_payload:
@@ -43,76 +53,191 @@ def _extract_payload_val(container: Any, key: str, fallback: Any = None) -> Any:
 
 
 class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Class to manage fetching Tesy Convector data."""
+    """Class to manage fetching Tesy Convector data from Cloud or Local."""
 
     config_entry: ConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        api: TesyConvector,
         config_entry: ConfigEntry,
+        local_api: TesyConvector | None = None,
+        cloud_api: TesyCloudClient | None = None,
     ) -> None:
         """Initialize the coordinator."""
-        self.api = api
-        self.ip_address = api.ip_address
         self.config_entry = config_entry
+        self.local_api = local_api
+        self.cloud_api = cloud_api
+        self.is_cloud = config_entry.data.get(CONF_AUTH_TYPE) == AUTH_TYPE_CLOUD or cloud_api is not None
+
+        self.device_id = str(config_entry.data.get(CONF_DEVICE_ID) or config_entry.data.get(CONF_IP_ADDRESS) or "tesy")
+        self.device_name = config_entry.data.get(CONF_DEVICE_NAME) or DEFAULT_NAME
 
         update_interval_sec = config_entry.options.get(
             CONF_UPDATE_INTERVAL,
             config_entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
         )
 
+        coord_name = f"{DOMAIN} ({'Cloud: ' + self.device_id if self.is_cloud else 'Local: ' + self.device_id})"
+
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN} ({self.ip_address})",
+            name=coord_name,
             update_interval=timedelta(seconds=update_interval_sec),
         )
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from Tesy Convector."""
-        try:
-            raw_data = await self.api.async_get_status()
-        except TesyError as err:
-            raise UpdateFailed(f"Error communicating with Tesy Convector at {self.ip_address}: {err}") from err
+        """Fetch data from Tesy via Cloud or Local."""
+        if self.is_cloud and self.cloud_api:
+            return await self._async_update_cloud()
+        elif self.local_api:
+            return await self._async_update_local()
+        else:
+            raise UpdateFailed("No valid API client configured for Tesy coordinator")
 
-        _LOGGER.debug("Raw data received from Tesy Convector (%s): %s", self.ip_address, raw_data)
+    async def _async_update_cloud(self) -> dict[str, Any]:
+        """Fetch data from MyTESY Cloud."""
+        assert self.cloud_api is not None
+        try:
+            device_info = await self.cloud_api.async_get_device_status(self.device_id)
+        except TesyCloudError as err:
+            raise UpdateFailed(f"Error fetching from MyTESY Cloud for device {self.device_id}: {err}") from err
+
+        raw_state = device_info.get("state", {})
+        if not isinstance(raw_state, dict):
+            raw_state = {}
+
+        # Parse DeviceStatus nested structure if present
+        dev_status = raw_state.get("DeviceStatus") if isinstance(raw_state.get("DeviceStatus"), dict) else raw_state
+
+        power_val = dev_status.get("power_sw") or dev_status.get("power")
+        is_on = str(power_val).lower() in ("on", "1", "true")
+
+        target_temp = dev_status.get("ref_gradus") or dev_status.get("tmpT") or dev_status.get("setTemp")
+        current_temp = dev_status.get("gradus") or dev_status.get("currentTemp") or dev_status.get("temp")
+
+        parsed: dict[str, Any] = {
+            "is_on": is_on,
+            "target_temp": float(target_temp) if target_temp is not None else None,
+            "current_temp": float(current_temp) if current_temp is not None else None,
+            "mode": dev_status.get("mode") or "manual",
+            "boost": str(dev_status.get("boost_sw", "")).lower() == "on",
+            "heater_state": dev_status.get("heater_state", "READY"),
+            "model": device_info.get("model") or "Convector Heater",
+            "name": device_info.get("name") or self.device_name,
+            "mac": device_info.get("mac"),
+            "sw_version": device_info.get("firmware_version") or "MyTESY Cloud",
+            "device_id": self.device_id,
+            "lock_device": str(dev_status.get("lockDevice", "")).lower() in ("on", "1"),
+            "anti_frost": str(dev_status.get("antiFrost", "")).lower() in ("on", "1"),
+            "adaptive_start": str(dev_status.get("adaptiveStart", "")).lower() in ("on", "1"),
+            "opened_window": str(dev_status.get("openedWindow", "")).lower() in ("on", "1"),
+            "uv": str(dev_status.get("uv", "")).lower() in ("on", "1"),
+        }
+        return parsed
+
+    async def _async_update_local(self) -> dict[str, Any]:
+        """Fetch data from Local Convector API."""
+        assert self.local_api is not None
+        try:
+            raw_data = await self.local_api.async_get_status()
+        except TesyError as err:
+            raise UpdateFailed(f"Error communicating with local Tesy at {self.device_id}: {err}") from err
 
         payload = raw_data.get("payload", {})
         if not isinstance(payload, dict):
             payload = raw_data
 
-        # Normalize parsed values
-        parsed: dict[str, Any] = {
-            "raw": raw_data,
-            "is_on": _extract_payload_val(payload, "onOff", "off") == "on",
-            "target_temp": _extract_payload_val(payload, "setTemp"),
-            "current_temp": _extract_payload_val(payload, "currentTemp")
+        target_t = _extract_payload_val(payload, "setTemp")
+        current_t = (
+            _extract_payload_val(payload, "currentTemp")
             or _extract_payload_val(payload, "gradus")
-            or _extract_payload_val(payload, "temp"),
+            or _extract_payload_val(payload, "temp")
+        )
+
+        parsed: dict[str, Any] = {
+            "is_on": _extract_payload_val(payload, "onOff", "off") == "on",
+            "target_temp": float(target_t) if target_t is not None else None,
+            "current_temp": float(current_t) if current_t is not None else None,
             "mode": _extract_payload_val(payload, "mode", "manual"),
+            "boost": False,
+            "heater_state": "HEATING" if _extract_payload_val(payload, "onOff", "off") == "on" else "READY",
             "lock_device": _extract_payload_val(payload, "lockDevice", "off") == "on",
             "anti_frost": _extract_payload_val(payload, "antiFrost", "off") == "on",
             "adaptive_start": _extract_payload_val(payload, "adaptiveStart", "off") == "on",
             "opened_window": _extract_payload_val(payload, "openedWindow", "off") == "on",
             "uv": _extract_payload_val(payload, "uv", "off") == "on",
-            "device_id": payload.get("devId") or payload.get("id") or self.ip_address,
-            "sw_version": payload.get("version") or payload.get("firmware"),
             "model": payload.get("model") or "Convector Heater",
+            "name": self.device_name,
+            "sw_version": payload.get("version") or "Local API",
+            "device_id": self.device_id,
         }
-
-        # Format target_temp to float if valid
-        if parsed["target_temp"] is not None:
-            try:
-                parsed["target_temp"] = float(parsed["target_temp"])
-            except (ValueError, TypeError):
-                parsed["target_temp"] = None
-
-        if parsed["current_temp"] is not None:
-            try:
-                parsed["current_temp"] = float(parsed["current_temp"])
-            except (ValueError, TypeError):
-                parsed["current_temp"] = None
-
         return parsed
+
+    # Unified Action Helpers
+    async def async_turn_on(self) -> None:
+        """Turn on the convector."""
+        if self.is_cloud and self.cloud_api:
+            await self.cloud_api.async_turn_on(self.device_id)
+        elif self.local_api:
+            await self.local_api.async_turn_on()
+        await self.async_request_refresh()
+
+    async def async_turn_off(self) -> None:
+        """Turn off the convector."""
+        if self.is_cloud and self.cloud_api:
+            await self.cloud_api.async_turn_off(self.device_id)
+        elif self.local_api:
+            await self.local_api.async_turn_off()
+        await self.async_request_refresh()
+
+    async def async_set_temperature(self, temp: float | int) -> None:
+        """Set target temperature."""
+        if self.is_cloud and self.cloud_api:
+            await self.cloud_api.async_set_temperature(self.device_id, temp)
+        elif self.local_api:
+            await self.local_api.async_set_temperature(temp)
+        await self.async_request_refresh()
+
+    async def async_set_boost(self, enabled: bool) -> None:
+        """Set boost mode."""
+        if self.is_cloud and self.cloud_api:
+            await self.cloud_api.async_set_boost(self.device_id, enabled)
+        await self.async_request_refresh()
+
+    async def async_set_lock_device(self, enabled: bool) -> None:
+        """Set child lock."""
+        if self.local_api:
+            await self.local_api.async_set_lock_device(enabled)
+            await self.async_request_refresh()
+
+    async def async_set_anti_frost(self, enabled: bool) -> None:
+        """Set anti-frost."""
+        if self.local_api:
+            await self.local_api.async_set_anti_frost(enabled)
+            await self.async_request_refresh()
+
+    async def async_set_adaptive_start(self, enabled: bool) -> None:
+        """Set adaptive start."""
+        if self.local_api:
+            await self.local_api.async_set_adaptive_start(enabled)
+            await self.async_request_refresh()
+
+    async def async_set_opened_window(self, enabled: bool) -> None:
+        """Set opened window detection."""
+        if self.local_api:
+            await self.local_api.async_set_opened_window(enabled)
+            await self.async_request_refresh()
+
+    async def async_set_uv(self, enabled: bool) -> None:
+        """Set UV / Air Care."""
+        if self.local_api:
+            await self.local_api.async_set_uv(enabled)
+            await self.async_request_refresh()
+
+    async def async_set_temperature_correction(self, offset: float | int) -> None:
+        """Set temperature calibration offset."""
+        if self.local_api:
+            await self.local_api.async_set_temperature_correction(offset)
+            await self.async_request_refresh()
