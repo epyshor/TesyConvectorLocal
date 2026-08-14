@@ -1,0 +1,61 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Tesy Convector",
+        "description": "Enter the IP address of your Tesy convector and optional external temperature sensor.",
+        "data": {
+          "ip_address": "IP Address",
+          "temperature_entity": "External Temperature Sensor (Optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the convector. Check the IP address and make sure the convector is turned on and connected to Wi-Fi.",
+      "invalid_response": "The device returned an unexpected response format.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This Tesy convector is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tesy Convector Options",
+        "description": "Configure external temperature sensor and polling interval.",
+        "data": {
+          "temperature_entity": "External Temperature Sensor",
+          "update_interval": "Update Interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "lock_device": {
+        "name": "Child Lock"
+      },
+      "anti_frost": {
+        "name": "Anti-Frost Protection"
+      },
+      "adaptive_start": {
+        "name": "Adaptive Start"
+      },
+      "opened_window": {
+        "name": "Open Window Detection"
+      },
+      "uv": {
+        "name": "Air Care UV"
+      }
+    },
+    "sensor": {
+      "mode": {
+        "name": "Operating Mode"
+      },
+      "internal_temperature": {
+        "name": "Internal Temperature"
+      }
+    }
+  }
+}

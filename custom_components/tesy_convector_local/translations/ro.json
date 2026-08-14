@@ -1,0 +1,61 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conectare la Convectorul Tesy",
+        "description": "Introdu adresa IP a convectorului Tesy și opțional un senzor extern de temperatură.",
+        "data": {
+          "ip_address": "Adresă IP",
+          "temperature_entity": "Senzor Extern de Temperatură (Opțional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Conectarea la convector a eșuat. Verifică adresa IP și asigură-te că aparatul este pornit și conectat la Wi-Fi.",
+      "invalid_response": "Dispozitivul a returnat un răspuns invalid.",
+      "unknown": "A apărut o eroare neașteptată."
+    },
+    "abort": {
+      "already_configured": "Acest convector Tesy este deja configurat."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opțiuni Convector Tesy",
+        "description": "Configurează senzorul extern de temperatură și intervalul de interogare.",
+        "data": {
+          "temperature_entity": "Senzor Extern de Temperatură",
+          "update_interval": "Interval de actualizare (secunde)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "lock_device": {
+        "name": "Blocare Tastatură (Child Lock)"
+      },
+      "anti_frost": {
+        "name": "Protecție Anti-Îngheț"
+      },
+      "adaptive_start": {
+        "name": "Pornire Adaptivă"
+      },
+      "opened_window": {
+        "name": "Detecție Fereastră Deschisă"
+      },
+      "uv": {
+        "name": "Sterilizare Aer UV"
+      }
+    },
+    "sensor": {
+      "mode": {
+        "name": "Mod de Lucru"
+      },
+      "internal_temperature": {
+        "name": "Temperatură Internă"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+set_temperature_correction:
+  name: Set Temperature Correction
+  description: Adjust the internal temperature sensor calibration offset (-4 to +4 °C).
+  target:
+    entity:
+      integration: tesy_convector_local
+      domain: climate
+  fields:
+    correction:
+      name: Temperature Correction
+      description: Calibration offset in degrees Celsius.
+      required: true
+      selector:
+        number:
+          min: -4.0
+          max: 4.0
+          step: 0.5
+          unit_of_measurement: "°C"
