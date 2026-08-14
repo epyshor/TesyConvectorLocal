@@ -1,7 +1,7 @@
 {
   "domain": "tesy_convector_local",
   "name": "Tesy Convector (Cloud & Local)",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "documentation": "https://github.com/epyshor/TesyConvectorLocal",
   "issue_tracker": "https://github.com/epyshor/TesyConvectorLocal/issues",
   "dependencies": [],

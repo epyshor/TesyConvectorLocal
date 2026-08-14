@@ -111,11 +111,11 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         dev_status = raw_state.get("DeviceStatus") if isinstance(raw_state.get("DeviceStatus"), dict) else raw_state
 
-        power_val = dev_status.get("power_sw") or dev_status.get("power")
+        power_val = dev_status.get("power_sw") or dev_status.get("power") or dev_status.get("status")
         is_on = str(power_val).lower() in ("on", "1", "true")
 
-        target_temp = dev_status.get("ref_gradus") or dev_status.get("tmpT") or dev_status.get("setTemp")
-        current_temp = dev_status.get("gradus") or dev_status.get("currentTemp") or dev_status.get("temp")
+        target_temp = dev_status.get("ref_gradus") or dev_status.get("tmpT") or dev_status.get("temp") or dev_status.get("setTemp")
+        current_temp = dev_status.get("gradus") or dev_status.get("current_temp") or dev_status.get("currentTemp")
 
         parsed: dict[str, Any] = {
             "is_on": is_on,
@@ -123,8 +123,8 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "current_temp": float(current_temp) if current_temp is not None else None,
             "mode": dev_status.get("mode") or "manual",
             "boost": str(dev_status.get("boost_sw", "")).lower() == "on",
-            "heater_state": dev_status.get("heater_state", "READY"),
-            "model": device_info.get("model") or "Convector Heater",
+            "heater_state": "HEATING" if (dev_status.get("heating") == "on" or str(dev_status.get("heater_state", "")).upper() == "HEATING") else ("READY" if is_on else "INACTIVE"),
+            "model": device_info.get("model") or "cn05uv",
             "name": device_info.get("name") or self.device_name,
             "mac": device_info.get("mac"),
             "sw_version": device_info.get("firmware_version") or "MyTESY Cloud",
@@ -134,6 +134,7 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "adaptive_start": str(dev_status.get("adaptiveStart", "")).lower() in ("on", "1"),
             "opened_window": str(dev_status.get("openedWindow", "")).lower() in ("on", "1"),
             "uv": str(dev_status.get("uv", "")).lower() in ("on", "1"),
+            "temp_correction": float(dev_status.get("TCorrection", 0.0) or 0.0),
         }
         return parsed
 
@@ -172,6 +173,7 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "name": self.device_name,
             "sw_version": payload.get("version") or "Local API",
             "device_id": self.device_id,
+            "temp_correction": 0.0,
         }
         return parsed
 
@@ -265,11 +267,14 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_set_temperature_correction(self, offset: float | int) -> None:
         """Set temperature calibration offset."""
-        if self.local_api:
+        self._optimistic_update({"temp_correction": float(offset)})
+        if self.is_cloud and self.cloud_api:
+            await self.cloud_api.async_set_temperature_correction(self.device_id, offset)
+        elif self.local_api:
             await self.local_api.async_set_temperature_correction(offset)
-            self.hass.async_create_task(self._delayed_refresh())
+        self.hass.async_create_task(self._delayed_refresh())
 
     async def _delayed_refresh(self) -> None:
-        """Wait a moment for the device to apply changes, then refresh."""
-        await asyncio.sleep(2)
+        """Wait a moment for the device to apply changes in cloud, then refresh."""
+        await asyncio.sleep(5)
         await self.async_request_refresh()
