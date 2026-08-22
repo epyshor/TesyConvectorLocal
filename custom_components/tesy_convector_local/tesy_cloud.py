@@ -202,11 +202,41 @@ class TesyCloudClient:
             await self._session.close()
 
     async def async_login(self) -> dict[str, Any]:
-        """Authenticate with MyTESY Cloud and retrieve session tokens."""
+        """Authenticate with MyTESY Cloud and retrieve session tokens and userID."""
         session = await self._get_session()
-        url = f"{CLOUD_BASE_URL}/old-app-login"
 
-        payload = {
+        # Method 1: Modern MyTESY V4 API login (app-user-login)
+        url_v4 = f"{CLOUD_BASE_URL}/app-user-login"
+        payload_v4 = {
+            "email": self.username,
+            "password": self.password,
+        }
+
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                async with session.post(url_v4, json=payload_v4, headers=HEADERS) as response:
+                    if response.status in (200, 201):
+                        data = await response.json(content_type=None)
+                        if isinstance(data, dict) and not data.get("errors") and not data.get("error"):
+                            user_id_val = (
+                                data.get("userID")
+                                or data.get("id")
+                                or data.get("userId")
+                                or data.get("user_id")
+                            )
+                            if user_id_val is not None:
+                                self.userid = str(user_id_val)
+
+                            self.acc_session = data.get("acc_session") or data.get("session") or data.get("PHPSESSID")
+                            self.acc_alt = data.get("acc_alt") or data.get("alt") or data.get("ALT")
+                            _LOGGER.debug("MyTESY V4 login successful for %s (userID: %s)", self.username, self.userid)
+                            return data
+        except Exception as err:
+            _LOGGER.debug("app-user-login attempt error: %s. Trying old-app-login fallback...", err)
+
+        # Method 2: Legacy old-app-login endpoint
+        url_old = f"{CLOUD_BASE_URL}/old-app-login"
+        payload_old = {
             "email": self.username,
             "password": self.password,
             "userEmail": self.username,
@@ -214,11 +244,11 @@ class TesyCloudClient:
             "lang": "en",
         }
         if self.userid:
-            payload["userID"] = self.userid
+            payload_old["userID"] = self.userid
 
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.post(url, json=payload, headers=HEADERS) as response:
+                async with session.post(url_old, json=payload_old, headers=HEADERS) as response:
                     if response.status not in (200, 201):
                         raise TesyCloudConnectionError(f"HTTP {response.status} from MyTESY Cloud login")
 
@@ -245,10 +275,9 @@ class TesyCloudClient:
                             self.userid = str(user_id_val)
 
                     _LOGGER.debug(
-                        "MyTESY login successful for %s (userID: %s, session: %s)",
+                        "MyTESY legacy login successful for %s (userID: %s)",
                         self.username,
                         self.userid,
-                        bool(self.acc_session),
                     )
                     return data
 
@@ -261,7 +290,7 @@ class TesyCloudClient:
         """Fetch all devices registered on the user's MyTESY account."""
         session = await self._get_session()
 
-        if not self.acc_session or not self.acc_alt:
+        if not self.userid or not self.acc_session:
             await self.async_login()
 
         # Method 1: Try get-my-devices endpoint
@@ -293,10 +322,6 @@ class TesyCloudClient:
             "CURRENT_SESSION": None,
             "PHPSESSID": self.acc_session,
             "last_login_username": self.username,
-            "userID": self.userid,
-            "userEmail": self.username,
-            "userPass": self.password,
-            "lang": "en",
         }
 
         try:
