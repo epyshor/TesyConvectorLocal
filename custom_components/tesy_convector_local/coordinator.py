@@ -111,19 +111,38 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         dev_status = raw_state.get("DeviceStatus") if isinstance(raw_state.get("DeviceStatus"), dict) else raw_state
 
-        power_val = dev_status.get("power_sw") or dev_status.get("power") or dev_status.get("status")
+        power_val = (
+            dev_status.get("power_sw")
+            or dev_status.get("power")
+            or dev_status.get("onOff")
+            or dev_status.get("status")
+            or dev_status.get("state")
+        )
         is_on = str(power_val).lower() in ("on", "1", "true")
 
-        target_temp = dev_status.get("ref_gradus") or dev_status.get("tmpT") or dev_status.get("temp") or dev_status.get("setTemp")
-        current_temp = dev_status.get("gradus") or dev_status.get("current_temp") or dev_status.get("currentTemp")
+        target_temp = (
+            dev_status.get("ref_gradus")
+            or dev_status.get("tmpT")
+            or dev_status.get("setTemp")
+            or dev_status.get("temp")
+            or dev_status.get("target_temp")
+            or dev_status.get("req_temp")
+        )
+        current_temp = (
+            dev_status.get("gradus")
+            or dev_status.get("current_temp")
+            or dev_status.get("currentTemp")
+            or dev_status.get("curr_temp")
+            or dev_status.get("temp_current")
+        )
 
         parsed: dict[str, Any] = {
             "is_on": is_on,
             "target_temp": float(target_temp) if target_temp is not None else None,
             "current_temp": float(current_temp) if current_temp is not None else None,
             "mode": dev_status.get("mode") or "manual",
-            "boost": str(dev_status.get("boost_sw", "")).lower() == "on",
-            "heater_state": "HEATING" if (dev_status.get("heating") == "on" or str(dev_status.get("heater_state", "")).upper() == "HEATING") else ("READY" if is_on else "INACTIVE"),
+            "boost": str(dev_status.get("boost_sw", "")).lower() in ("on", "1"),
+            "heater_state": "HEATING" if (str(dev_status.get("heating", "")).lower() in ("on", "1") or str(dev_status.get("heater_state", "")).upper() == "HEATING") else ("READY" if is_on else "INACTIVE"),
             "model": device_info.get("model") or "cn05uv",
             "name": device_info.get("name") or self.device_name,
             "mac": device_info.get("mac"),

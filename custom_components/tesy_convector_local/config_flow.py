@@ -97,6 +97,13 @@ class TesyConvectorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            # If direct entry creation requested (e.g. background task for remaining devices)
+            if CONF_DEVICE_ID in user_input and CONF_USERNAME in user_input:
+                self._cloud_credentials = user_input
+                dev_id = user_input[CONF_DEVICE_ID]
+                dev_name = user_input.get(CONF_DEVICE_NAME) or f"Tesy {dev_id}"
+                return await self._create_cloud_entry(dev_id, {"name": dev_name})
+
             username = user_input[CONF_USERNAME].strip()
             password = user_input[CONF_PASSWORD]
             userid = user_input.get(CONF_USER_ID)
@@ -162,21 +169,59 @@ class TesyConvectorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_select_device(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle selecting one device from multiple discovered devices."""
+        """Handle selecting devices from discovered cloud devices."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             device_id = user_input[CONF_DEVICE_ID]
+
+            if device_id == "all_devices":
+                dev_ids = list(self._discovered_devices.keys())
+                first_dev_id = dev_ids[0]
+                first_dev_info = self._discovered_devices[first_dev_id]
+
+                # Trigger background flow init for remaining devices
+                for remaining_id in dev_ids[1:]:
+                    rem_info = self._discovered_devices[remaining_id]
+                    rem_name = rem_info.get("name") or f"Tesy {remaining_id}"
+                    entry_data = {
+                        CONF_AUTH_TYPE: AUTH_TYPE_CLOUD,
+                        CONF_USERNAME: self._cloud_credentials[CONF_USERNAME],
+                        CONF_PASSWORD: self._cloud_credentials[CONF_PASSWORD],
+                        CONF_USER_ID: self._cloud_credentials.get(CONF_USER_ID),
+                        CONF_DEVICE_ID: str(remaining_id),
+                        CONF_DEVICE_NAME: rem_name,
+                        CONF_TEMPERATURE_ENTITY: self._cloud_credentials.get(CONF_TEMPERATURE_ENTITY),
+                    }
+                    self.hass.async_create_task(
+                        self.hass.config_entries.flow.async_init(
+                            DOMAIN,
+                            context={"source": config_entries.SOURCE_USER},
+                            data=entry_data,
+                        )
+                    )
+
+                return await self._create_cloud_entry(first_dev_id, first_dev_info)
+
             dev_info = self._discovered_devices.get(device_id, {})
             return await self._create_cloud_entry(device_id, dev_info)
 
-        options = [
-            {
-                "value": dev_id,
-                "label": f"{info.get('name')} ({info.get('model', 'Heater')}) - ID: {dev_id}",
-            }
-            for dev_id, info in self._discovered_devices.items()
-        ]
+        options = []
+        if len(self._discovered_devices) > 1:
+            options.append(
+                {
+                    "value": "all_devices",
+                    "label": f"⚡ ALL DEVICES ({len(self._discovered_devices)} devices)",
+                }
+            )
+
+        for dev_id, info in self._discovered_devices.items():
+            options.append(
+                {
+                    "value": dev_id,
+                    "label": f"{info.get('name')} ({info.get('model', 'Heater')}) - ID: {dev_id}",
+                }
+            )
 
         return self.async_show_form(
             step_id="select_device",

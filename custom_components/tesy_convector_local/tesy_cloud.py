@@ -278,10 +278,11 @@ class TesyCloudClient:
                     async with session.get(url, headers=HEADERS) as response:
                         if response.status == 200:
                             data = await response.json(content_type=None)
-                            if isinstance(data, dict) and data:
+                            if data:
                                 devices = self._normalize_devices_dict(data)
-                                self._cached_devices = devices
-                                return devices
+                                if devices:
+                                    self._cached_devices = devices
+                                    return devices
             except Exception as err:
                 _LOGGER.debug("get-my-devices attempt error: %s. Trying old-app-devices fallback...", err)
 
@@ -305,83 +306,128 @@ class TesyCloudClient:
                         raise TesyCloudConnectionError(f"HTTP {response.status} fetching devices from MyTESY")
 
                     data = await response.json(content_type=None)
-                    if isinstance(data, dict):
-                        devices_container = data.get("device") or data
-                        devices = self._normalize_devices_dict(devices_container)
-                        self._cached_devices = devices
-                        return devices
-
-                    return {}
+                    devices = self._normalize_devices_dict(data)
+                    self._cached_devices = devices
+                    return devices
 
         except asyncio.TimeoutError as err:
             raise TesyCloudConnectionError("Timeout fetching devices from MyTESY Cloud") from err
         except aiohttp.ClientError as err:
             raise TesyCloudConnectionError(f"Network error fetching MyTESY devices: {err}") from err
 
-    def _normalize_devices_dict(self, raw_devices: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        """Normalize devices dictionary from MyTESY into a clean format."""
+    def _normalize_devices_dict(self, raw_data: Any) -> dict[str, dict[str, Any]]:
+        """Normalize devices dictionary/list from MyTESY into a clean format."""
         normalized: dict[str, dict[str, Any]] = {}
+        if not raw_data:
+            return normalized
 
-        for key, item in raw_devices.items():
+        container: Any = raw_data
+
+        # If raw_data is a dict, check for subkeys containing list or dict of devices
+        if isinstance(raw_data, dict):
+            # First check if raw_data itself is already a single device object
+            is_single_device = any(
+                k in raw_data for k in ("deviceName", "dev_name", "mac", "MAC", "DeviceStatus", "model", "token")
+            )
+            if not is_single_device:
+                for key in ("device", "devices", "data", "result", "list", "items"):
+                    val = raw_data.get(key)
+                    if isinstance(val, (dict, list)) and val:
+                        container = val
+                        break
+
+        items_list: list[tuple[Any, Any]] = []
+        if isinstance(container, dict):
+            # Check if container is a single device object or a map of devices
+            if any(k in container for k in ("deviceName", "dev_name", "mac", "MAC", "DeviceStatus", "model", "token")):
+                items_list = [(container.get("id") or container.get("mac") or "0", container)]
+            else:
+                items_list = list(container.items())
+        elif isinstance(container, list):
+            items_list = [(idx, item) for idx, item in enumerate(container)]
+        else:
+            return normalized
+
+        for key, item in items_list:
             if not isinstance(item, dict):
                 continue
 
-            state_obj = item.get("state") or item.get("DeviceStatus") or {}
+            state_obj = item.get("state") or item.get("DeviceStatus") or item.get("status") or {}
             if not isinstance(state_obj, dict):
                 state_obj = {}
 
             numeric_id = (
                 item.get("id")
+                or item.get("deviceID")
+                or item.get("device_id")
                 or state_obj.get("id")
                 or (int(key) if str(key).isdigit() else None)
             )
 
-            mac = item.get("mac") or (key if not str(key).isdigit() else None)
-            device_id = str(numeric_id or mac or key)
+            mac = (
+                item.get("mac")
+                or item.get("MAC")
+                or item.get("mac_address")
+                or item.get("dev_mac")
+                or state_obj.get("mac")
+                or (key if not str(key).isdigit() and ":" in str(key) else None)
+            )
+
+            primary_id = str(mac or numeric_id or item.get("id") or key)
 
             name = (
                 item.get("deviceName")
                 or item.get("name")
                 or item.get("dev_name")
+                or item.get("alias")
                 or state_obj.get("deviceName")
                 or state_obj.get("name")
-                or f"Tesy {item.get('model', 'Heater')} ({device_id})"
+                or f"Tesy {item.get('model', 'Heater')} ({primary_id})"
             )
 
-            model = item.get("model") or item.get("device_type") or "cn05uv"
-            token = item.get("token")
-            fw_version = item.get("firmware_version") or item.get("sw_version")
+            model = item.get("model") or item.get("device_type") or item.get("dev_type") or "cn05uv"
+            token = item.get("token") or item.get("device_token")
+            fw_version = item.get("firmware_version") or item.get("sw_version") or item.get("fw_ver")
 
             dev_data = {
-                "id": str(device_id),
-                "numeric_id": str(numeric_id) if numeric_id is not None else str(device_id),
-                "name": name,
-                "mac": str(mac or device_id),
-                "model": model,
+                "id": str(primary_id),
+                "numeric_id": str(numeric_id) if numeric_id is not None else str(primary_id),
+                "name": str(name),
+                "mac": str(mac) if mac else str(primary_id),
+                "model": str(model),
                 "token": token,
                 "firmware_version": fw_version,
                 "raw_item": item,
                 "state": state_obj,
             }
 
-            normalized[str(device_id)] = dev_data
-            if mac and str(mac) != str(device_id):
-                normalized[str(mac)] = dev_data
-            if numeric_id and str(numeric_id) != str(device_id):
-                normalized[str(numeric_id)] = dev_data
+            normalized[str(primary_id)] = dev_data
 
         return normalized
 
     async def async_get_device_status(self, device_id: str) -> dict[str, Any]:
         """Fetch the latest status for a specific device."""
         devices = await self.async_get_devices()
-        dev_info = devices.get(str(device_id))
-        if not dev_info:
-            for d in devices.values():
-                if d.get("id") == str(device_id) or d.get("numeric_id") == str(device_id) or d.get("mac") == str(device_id):
-                    return d
-            raise TesyCloudError(f"Device ID {device_id} not found in MyTESY account")
-        return dev_info
+        str_id = str(device_id)
+
+        # 1. Direct match
+        dev_info = devices.get(str_id)
+        if dev_info:
+            return dev_info
+
+        # 2. Search by id, numeric_id, mac, or sanitized MAC (case-insensitive)
+        clean_target = str_id.replace(":", "").lower()
+        for d in devices.values():
+            if (
+                d.get("id") == str_id
+                or d.get("numeric_id") == str_id
+                or d.get("mac") == str_id
+                or str(d.get("mac", "")).replace(":", "").lower() == clean_target
+                or str(d.get("id", "")).replace(":", "").lower() == clean_target
+            ):
+                return d
+
+        raise TesyCloudError(f"Device ID {device_id} not found in MyTESY account")
 
     async def async_send_command(
         self,
