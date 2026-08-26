@@ -114,7 +114,11 @@ class TesyConvector:
         return await self.async_send_command("setMode", {"name": mode})
 
     async def async_set_temperature(self, temp: float | int) -> dict[str, Any]:
-        """Set target temperature (usually 10 to 30 C)."""
+        """Set target temperature (usually 10 to 30 C). Switch to manual mode first."""
+        try:
+            await self.async_set_mode("manual")
+        except Exception as err:
+            _LOGGER.debug("Could not set local mode to manual before setting temp: %s", err)
         return await self.async_send_command("setTemp", {"temp": round(float(temp))})
 
     async def async_set_adaptive_start(self, enabled: bool) -> dict[str, Any]:

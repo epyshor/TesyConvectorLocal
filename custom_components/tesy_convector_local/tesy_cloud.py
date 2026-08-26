@@ -462,7 +462,7 @@ class TesyCloudClient:
         rest_command: str | None = None,
         rest_value: Any = None,
     ) -> bool:
-        """Send command via Tesy MQTT broker (API v4) and fallback to REST."""
+        """Send command via Tesy REST API and MQTT broker."""
         dev_info = self._cached_devices.get(str(device_id))
         if not dev_info:
             try:
@@ -474,7 +474,20 @@ class TesyCloudClient:
         model = dev_info.get("model") or "cn05uv"
         token = dev_info.get("token")
 
-        # 1. Primary Method: MQTT (Native Tesy API v4)
+        if rest_command is None:
+            rest_command = mqtt_command
+        if rest_value is None and "status" in mqtt_payload:
+            rest_value = mqtt_payload["status"]
+        if rest_value is None and "temp" in mqtt_payload:
+            rest_value = mqtt_payload["temp"]
+        if rest_value is None and "mode" in mqtt_payload:
+            rest_value = mqtt_payload["mode"]
+
+        # 1. Primary Method: Always update MyTESY Cloud REST API database
+        rest_ok = await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
+
+        # 2. Secondary Method: Also publish via MQTT if device mac and token exist
+        mqtt_ok = False
         if mac and token:
             topic = f"v1/{mac}/request/{model}/{token}/{mqtt_command}"
             msg_payload = {
@@ -482,52 +495,58 @@ class TesyCloudClient:
                 **mqtt_payload,
             }
             mqtt_ok = await self.mqtt_client.async_publish(topic, msg_payload)
-            if mqtt_ok:
-                return True
 
-        # 2. Secondary Method: REST old-app-set-device-status fallback
-        if rest_command is None:
-            rest_command = mqtt_command
-        if rest_value is None and "status" in mqtt_payload:
-            rest_value = mqtt_payload["status"]
-
-        return await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
+        return rest_ok or mqtt_ok
 
     async def _async_send_rest_fallback(
         self, device_id: str, dev_info: dict[str, Any], command: str, value: Any
     ) -> bool:
-        """Fallback to REST endpoint."""
+        """Send command to MyTESY REST endpoint using candidate command keys for high compatibility."""
         session = await self._get_session()
         if not self.acc_session or not self.acc_alt:
             await self.async_login()
 
         target_id = dev_info.get("numeric_id") or dev_info.get("id") or str(device_id)
         url = f"{CLOUD_BASE_URL}/old-app-set-device-status"
-        payload = {
-            "ALT": self.acc_alt,
-            "CURRENT_SESSION": None,
-            "PHPSESSID": self.acc_session,
-            "last_login_username": self.username,
-            "id": target_id,
-            "apiVersion": "apiv1",
-            "command": command,
-            "value": value,
-            "userID": self.userid,
-            "userEmail": self.username,
-            "userPass": self.password,
-            "lang": "en",
-        }
 
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.post(url, json=payload, headers=HEADERS) as response:
-                    _LOGGER.debug("REST fallback response for %s: %s", command, response.status)
-                    return response.status == 200
-        except Exception as err:
-            _LOGGER.warning("REST fallback error: %s", err)
-            return False
+        # Expand command key into candidates for setTemp/req_temp/tmpT/ref_gradus, mode/setMode, power_sw/onOff/power
+        commands_to_try = [command]
+        if command in ("tmpT", "req_temp", "setTemp", "ref_gradus"):
+            commands_to_try = ["req_temp", "setTemp", "tmpT", "ref_gradus"]
+        elif command in ("mode", "setMode"):
+            commands_to_try = ["mode", "setMode"]
+        elif command in ("power_sw", "onOff", "power"):
+            commands_to_try = ["power_sw", "onOff", "power"]
 
-    # High-level Device Actions via MQTT
+        success = False
+        for cmd in commands_to_try:
+            payload = {
+                "ALT": self.acc_alt,
+                "CURRENT_SESSION": None,
+                "PHPSESSID": self.acc_session,
+                "last_login_username": self.username,
+                "id": target_id,
+                "apiVersion": "apiv1",
+                "command": cmd,
+                "value": value,
+                "userID": self.userid,
+                "userEmail": self.username,
+                "userPass": self.password,
+                "lang": "en",
+            }
+
+            try:
+                async with asyncio.timeout(REQUEST_TIMEOUT):
+                    async with session.post(url, json=payload, headers=HEADERS) as response:
+                        _LOGGER.debug("REST command '%s'=%s response status: %s", cmd, value, response.status)
+                        if response.status == 200:
+                            success = True
+            except Exception as err:
+                _LOGGER.warning("REST command '%s' error: %s", cmd, err)
+
+        return success
+
+    # High-level Device Actions via MQTT & REST
     async def async_turn_on(self, device_id: str) -> bool:
         """Turn on the convector."""
         return await self.async_send_command(
@@ -563,7 +582,7 @@ class TesyCloudClient:
             device_id,
             mqtt_command="setTemp",
             mqtt_payload={"temp": target},
-            rest_command="tmpT",
+            rest_command="req_temp",
             rest_value=target,
         )
 

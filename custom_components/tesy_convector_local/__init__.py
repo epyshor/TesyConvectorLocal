@@ -64,16 +64,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = async_get_clientsession(hass)
     auth_type = entry.data.get(CONF_AUTH_TYPE, AUTH_TYPE_CLOUD if CONF_USERNAME in entry.data else "local")
 
-    if auth_type == AUTH_TYPE_CLOUD or CONF_USERNAME in entry.data:
+    cloud_api: TesyCloudClient | None = None
+    local_api: TesyConvector | None = None
+
+    if CONF_USERNAME in entry.data and entry.data[CONF_USERNAME]:
         username = entry.data[CONF_USERNAME]
         password = entry.data[CONF_PASSWORD]
         userid = entry.data.get(CONF_USER_ID)
         cloud_api = TesyCloudClient(username, password, userid=userid, session=session)
-        coordinator = TesyDataUpdateCoordinator(hass, entry, cloud_api=cloud_api)
-    else:
-        ip_address = entry.data.get(CONF_IP_ADDRESS, "")
+
+    if CONF_IP_ADDRESS in entry.data and entry.data[CONF_IP_ADDRESS]:
+        ip_address = entry.data[CONF_IP_ADDRESS]
         local_api = TesyConvector(ip_address, session=session)
-        coordinator = TesyDataUpdateCoordinator(hass, entry, local_api=local_api)
+
+    coordinator = TesyDataUpdateCoordinator(hass, entry, local_api=local_api, cloud_api=cloud_api)
 
     try:
         await coordinator.async_config_entry_first_refresh()

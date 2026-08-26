@@ -207,18 +207,18 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_turn_on(self) -> None:
         """Turn on the convector."""
         self._optimistic_update({"is_on": True, "heater_state": "HEATING"})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_turn_on(self.device_id)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_turn_on()
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_turn_off(self) -> None:
         """Turn off the convector."""
         self._optimistic_update({"is_on": False, "heater_state": "READY"})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_turn_off(self.device_id)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_turn_off()
         self.hass.async_create_task(self._delayed_refresh())
 
@@ -226,70 +226,70 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Set target temperature."""
         target = float(round(float(temp)))
         self._optimistic_update({"target_temp": target})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_temperature(self.device_id, target)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_temperature(target)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_boost(self, enabled: bool) -> None:
         """Set boost mode."""
         self._optimistic_update({"boost": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_boost(self.device_id, enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_lock_device(self, enabled: bool) -> None:
         """Set child lock."""
         self._optimistic_update({"lock_device": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_lock_device(self.device_id, enabled)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_lock_device(enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_anti_frost(self, enabled: bool) -> None:
         """Set anti-frost."""
         self._optimistic_update({"anti_frost": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_anti_frost(self.device_id, enabled)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_anti_frost(enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_adaptive_start(self, enabled: bool) -> None:
         """Set adaptive start."""
         self._optimistic_update({"adaptive_start": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_adaptive_start(self.device_id, enabled)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_adaptive_start(enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_opened_window(self, enabled: bool) -> None:
         """Set opened window detection."""
         self._optimistic_update({"opened_window": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_opened_window(self.device_id, enabled)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_opened_window(enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_uv(self, enabled: bool) -> None:
         """Set UV / Air Care."""
         self._optimistic_update({"uv": enabled})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_uv(self.device_id, enabled)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_uv(enabled)
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_temperature_correction(self, offset: float | int) -> None:
         """Set temperature calibration offset."""
         self._optimistic_update({"temp_correction": float(offset)})
-        if self.is_cloud and self.cloud_api:
+        if self.cloud_api:
             await self.cloud_api.async_set_temperature_correction(self.device_id, offset)
-        elif self.local_api:
+        if self.local_api:
             await self.local_api.async_set_temperature_correction(offset)
         self.hass.async_create_task(self._delayed_refresh())
 
