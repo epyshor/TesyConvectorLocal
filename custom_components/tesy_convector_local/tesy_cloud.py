@@ -470,7 +470,9 @@ class TesyCloudClient:
             except Exception:
                 dev_info = {}
 
-        mac = dev_info.get("mac") or str(device_id)
+        raw_mac = dev_info.get("mac") or str(device_id)
+        clean_mac_upper = str(raw_mac).replace(":", "").upper()
+        clean_mac_lower = str(raw_mac).replace(":", "").lower()
         model = dev_info.get("model") or "cn05uv"
         token = dev_info.get("token")
 
@@ -483,33 +485,48 @@ class TesyCloudClient:
         if rest_value is None and "mode" in mqtt_payload:
             rest_value = mqtt_payload["mode"]
 
-        # 1. Primary Method: Always update MyTESY Cloud REST API database
+        # 1. Primary Method: Update MyTESY Cloud REST API database
         rest_ok = await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
 
-        # 2. Secondary Method: Also publish via MQTT if device mac and token exist
+        # 2. Secondary Method: Also publish via MQTT with clean MAC (no colons) if token exists
         mqtt_ok = False
-        if mac and token:
-            topic = f"v1/{mac}/request/{model}/{token}/{mqtt_command}"
+        if token:
             msg_payload = {
                 "app_id": f"ha_{uuid.uuid4().hex[:7]}",
                 **mqtt_payload,
             }
-            mqtt_ok = await self.mqtt_client.async_publish(topic, msg_payload)
+            # Try both uppercase and lowercase clean MAC topics
+            topic_upper = f"v1/{clean_mac_upper}/request/{model}/{token}/{mqtt_command}"
+            topic_lower = f"v1/{clean_mac_lower}/request/{model}/{token}/{mqtt_command}"
+            topic_raw = f"v1/{raw_mac}/request/{model}/{token}/{mqtt_command}"
+
+            res_u = await self.mqtt_client.async_publish(topic_upper, msg_payload)
+            res_l = await self.mqtt_client.async_publish(topic_lower, msg_payload)
+            if raw_mac != clean_mac_upper:
+                await self.mqtt_client.async_publish(topic_raw, msg_payload)
+            mqtt_ok = res_u or res_l
 
         return rest_ok or mqtt_ok
 
     async def _async_send_rest_fallback(
         self, device_id: str, dev_info: dict[str, Any], command: str, value: Any
     ) -> bool:
-        """Send command to MyTESY REST endpoint using candidate command keys for high compatibility."""
+        """Send command to MyTESY REST endpoints using all candidate keys and ID formats for high compatibility."""
         session = await self._get_session()
         if not self.acc_session or not self.acc_alt:
             await self.async_login()
 
-        target_id = dev_info.get("numeric_id") or dev_info.get("id") or str(device_id)
-        url = f"{CLOUD_BASE_URL}/old-app-set-device-status"
+        numeric_id = dev_info.get("numeric_id")
+        raw_mac = dev_info.get("mac") or str(device_id)
+        clean_mac = str(raw_mac).replace(":", "").upper()
+        target_id = numeric_id or dev_info.get("id") or str(device_id)
 
-        # Expand command key into candidates for setTemp/req_temp/tmpT/ref_gradus, mode/setMode, power_sw/onOff/power
+        endpoints = [
+            f"{CLOUD_BASE_URL}/old-app-set-device-status",
+            f"{CLOUD_BASE_URL}/app-set-device-status",
+            f"{CLOUD_BASE_URL}/set-device-status",
+        ]
+
         commands_to_try = [command]
         if command in ("tmpT", "req_temp", "setTemp", "ref_gradus"):
             commands_to_try = ["req_temp", "setTemp", "tmpT", "ref_gradus"]
@@ -519,30 +536,37 @@ class TesyCloudClient:
             commands_to_try = ["power_sw", "onOff", "power"]
 
         success = False
-        for cmd in commands_to_try:
-            payload = {
-                "ALT": self.acc_alt,
-                "CURRENT_SESSION": None,
-                "PHPSESSID": self.acc_session,
-                "last_login_username": self.username,
-                "id": target_id,
-                "apiVersion": "apiv1",
-                "command": cmd,
-                "value": value,
-                "userID": self.userid,
-                "userEmail": self.username,
-                "userPass": self.password,
-                "lang": "en",
-            }
+        for endpoint in endpoints:
+            for cmd in commands_to_try:
+                payload = {
+                    "ALT": self.acc_alt,
+                    "CURRENT_SESSION": None,
+                    "PHPSESSID": self.acc_session,
+                    "last_login_username": self.username,
+                    "id": target_id,
+                    "deviceID": numeric_id or target_id,
+                    "device_id": numeric_id or target_id,
+                    "mac": raw_mac,
+                    "MAC": clean_mac,
+                    "apiVersion": "apiv1",
+                    "command": cmd,
+                    "value": str(value) if isinstance(value, (int, float)) else value,
+                    "val": value,
+                    "status": str(value),
+                    "userID": self.userid,
+                    "userEmail": self.username,
+                    "userPass": self.password,
+                    "lang": "en",
+                }
 
-            try:
-                async with asyncio.timeout(REQUEST_TIMEOUT):
-                    async with session.post(url, json=payload, headers=HEADERS) as response:
-                        _LOGGER.debug("REST command '%s'=%s response status: %s", cmd, value, response.status)
-                        if response.status == 200:
-                            success = True
-            except Exception as err:
-                _LOGGER.warning("REST command '%s' error: %s", cmd, err)
+                try:
+                    async with asyncio.timeout(REQUEST_TIMEOUT):
+                        async with session.post(endpoint, json=payload, headers=HEADERS) as response:
+                            _LOGGER.debug("REST %s '%s'=%s status: %s", endpoint, cmd, value, response.status)
+                            if response.status in (200, 201):
+                                success = True
+                except Exception as err:
+                    _LOGGER.debug("REST error for %s %s: %s", endpoint, cmd, err)
 
         return success
 

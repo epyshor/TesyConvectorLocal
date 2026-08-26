@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -74,6 +75,9 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.device_id = str(config_entry.data.get(CONF_DEVICE_ID) or config_entry.data.get(CONF_IP_ADDRESS) or "tesy")
         self.device_name = config_entry.data.get(CONF_DEVICE_NAME) or DEFAULT_NAME
 
+        self._optimistic_temp_until: float = 0.0
+        self._optimistic_target_temp: float | None = None
+
         update_interval_sec = config_entry.options.get(
             CONF_UPDATE_INTERVAL,
             config_entry.data.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
@@ -91,11 +95,17 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Tesy via Cloud or Local."""
         if self.is_cloud and self.cloud_api:
-            return await self._async_update_cloud()
+            data = await self._async_update_cloud()
         elif self.local_api:
-            return await self._async_update_local()
+            data = await self._async_update_local()
         else:
             raise UpdateFailed("No valid API client configured for Tesy coordinator")
+
+        # Preserve optimistic target_temp while optimistic hold window is active
+        if time.time() < self._optimistic_temp_until and self._optimistic_target_temp is not None:
+            data["target_temp"] = self._optimistic_target_temp
+
+        return data
 
     async def _async_update_cloud(self) -> dict[str, Any]:
         """Fetch data from MyTESY Cloud."""
@@ -223,13 +233,17 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_temperature(self, temp: float | int) -> None:
-        """Set target temperature."""
+        """Set target temperature with optimistic hold window."""
         target = float(round(float(temp)))
+        self._optimistic_target_temp = target
+        self._optimistic_temp_until = time.time() + 25.0  # Hold target temperature for 25s
         self._optimistic_update({"target_temp": target})
+
         if self.cloud_api:
             await self.cloud_api.async_set_temperature(self.device_id, target)
         if self.local_api:
             await self.local_api.async_set_temperature(target)
+
         self.hass.async_create_task(self._delayed_refresh())
 
     async def async_set_boost(self, enabled: bool) -> None:
@@ -294,6 +308,8 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.async_create_task(self._delayed_refresh())
 
     async def _delayed_refresh(self) -> None:
-        """Wait a moment for the device to apply changes in cloud, then refresh."""
+        """Wait for the device to apply changes in cloud/local, then refresh at 5s and 12s."""
         await asyncio.sleep(5)
+        await self.async_request_refresh()
+        await asyncio.sleep(7)
         await self.async_request_refresh()
