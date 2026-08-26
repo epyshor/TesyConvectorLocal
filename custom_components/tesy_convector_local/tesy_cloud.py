@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import os
+import ssl
 import struct
 from typing import Any
 import uuid
@@ -17,7 +20,7 @@ CLOUD_BASE_URL = "https://ad.mytesy.com/rest"
 REQUEST_TIMEOUT = 15
 
 MQTT_HOST = "mqtt.tesy.com"
-MQTT_PORT = 1883
+MQTT_PORT = 8083
 MQTT_USER = "client1"
 MQTT_PASS = "123"
 
@@ -46,29 +49,73 @@ def _encode_remaining_length(rem_len: int) -> bytes:
     return bytes(rem_bytes)
 
 
+def _make_ws_frame(payload_bytes: bytes) -> bytes:
+    """Pack raw payload bytes into a masked WebSocket binary frame (opcode 0x2)."""
+    length = len(payload_bytes)
+    frame = bytearray()
+    frame.append(0x82)  # FIN = 1, Opcode = 0x2 (Binary)
+    mask_key = os.urandom(4)
+    if length < 126:
+        frame.append(length | 0x80)
+    elif length < 65536:
+        frame.append(126 | 0x80)
+        frame.extend(struct.pack("!H", length))
+    else:
+        frame.append(127 | 0x80)
+        frame.extend(struct.pack("!Q", length))
+    frame.extend(mask_key)
+    masked_payload = bytearray(b ^ mask_key[i % 4] for i, b in enumerate(payload_bytes))
+    frame.extend(masked_payload)
+    return bytes(frame)
+
+
 class TesyMqttClient:
-    """Lightweight asynchronous MQTT client for publishing Tesy device commands."""
+    """WebSocket Secure (WSS) MQTT client for publishing Tesy device commands."""
 
     def __init__(self) -> None:
-        """Initialize the MQTT client."""
+        """Initialize the WSS MQTT client."""
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._connected = False
         self._lock = asyncio.Lock()
 
     async def async_connect(self) -> bool:
-        """Connect to the Tesy MQTT broker."""
+        """Connect to Tesy WSS MQTT broker at wss://mqtt.tesy.com:8083/mqtt."""
         async with self._lock:
             if self._connected and self._writer and not self._writer.is_closing():
                 return True
 
             try:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+
                 self._reader, self._writer = await asyncio.wait_for(
-                    asyncio.open_connection(MQTT_HOST, MQTT_PORT),
+                    asyncio.open_connection(MQTT_HOST, MQTT_PORT, ssl=ssl_ctx),
                     timeout=10,
                 )
 
-                client_id = f"ha_{uuid.uuid4().hex[:8]}"
+                ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+                handshake = (
+                    f"GET /mqtt HTTP/1.1\r\n"
+                    f"Host: {MQTT_HOST}:{MQTT_PORT}\r\n"
+                    f"Upgrade: websocket\r\n"
+                    f"Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {ws_key}\r\n"
+                    f"Sec-WebSocket-Protocol: mqtt\r\n"
+                    f"Sec-WebSocket-Version: 13\r\n"
+                    f"Origin: https://v4.mytesy.com\r\n\r\n"
+                )
+                self._writer.write(handshake.encode("utf-8"))
+                await self._writer.drain()
+
+                resp = await asyncio.wait_for(self._reader.read(4096), timeout=10)
+                if b"101 Switching Protocols" not in resp:
+                    _LOGGER.warning("WSS WebSocket handshake failed with response: %s", resp[:100])
+                    await self.async_close()
+                    return False
+
+                client_id = f"mqttjs_{uuid.uuid4().hex[:8]}"
                 proto_name = b"MQTT"
                 proto_level = 4
                 flags = 0xC2  # username + password + clean session
@@ -90,28 +137,28 @@ class TesyMqttClient:
                 )
 
                 rem_len = len(var_header) + len(payload)
-                pkt = bytes([0x10]) + _encode_remaining_length(rem_len) + var_header + payload
+                mqtt_connect_pkt = bytes([0x10]) + _encode_remaining_length(rem_len) + var_header + payload
 
-                self._writer.write(pkt)
+                self._writer.write(_make_ws_frame(mqtt_connect_pkt))
                 await self._writer.drain()
 
-                resp = await asyncio.wait_for(self._reader.read(4), timeout=10)
-                if len(resp) >= 4 and resp[0] == 0x20 and resp[3] == 0x00:
-                    _LOGGER.debug("Connected to Tesy MQTT broker %s:%s", MQTT_HOST, MQTT_PORT)
+                connack_frame = await asyncio.wait_for(self._reader.read(1024), timeout=10)
+                if len(connack_frame) >= 2:
+                    _LOGGER.info("Connected to Tesy WSS MQTT broker %s:%s", MQTT_HOST, MQTT_PORT)
                     self._connected = True
                     return True
                 else:
-                    _LOGGER.warning("Unexpected MQTT CONNACK from %s: %s", MQTT_HOST, resp.hex())
+                    _LOGGER.warning("Unexpected WSS MQTT CONNACK from %s", MQTT_HOST)
                     await self.async_close()
                     return False
 
             except Exception as err:
-                _LOGGER.warning("Could not connect to Tesy MQTT broker: %s", err)
+                _LOGGER.warning("Could not connect to Tesy WSS MQTT broker: %s", err)
                 await self.async_close()
                 return False
 
     async def async_publish(self, topic: str, payload_data: dict[str, Any]) -> bool:
-        """Publish a command message to Tesy MQTT topic."""
+        """Publish a command message to Tesy WSS MQTT topic."""
         try:
             if not self._connected:
                 ok = await self.async_connect()
@@ -124,25 +171,34 @@ class TesyMqttClient:
 
             var_header = struct.pack("!H", len(topic_bytes)) + topic_bytes
             rem_len = len(var_header) + len(payload_bytes)
-            pkt = bytes([0x30]) + _encode_remaining_length(rem_len) + var_header + payload_bytes
+            mqtt_pub_pkt = bytes([0x30]) + _encode_remaining_length(rem_len) + var_header + payload_bytes
 
             async with self._lock:
                 if self._writer and not self._writer.is_closing():
-                    self._writer.write(pkt)
+                    self._writer.write(_make_ws_frame(mqtt_pub_pkt))
                     await self._writer.drain()
-                    _LOGGER.info("Published MQTT command to topic %s: %s", topic, payload_str)
+                    _LOGGER.info("Published WSS MQTT command to topic %s: %s", topic, payload_str)
                     return True
                 else:
                     self._connected = False
                     return False
 
         except Exception as err:
-            _LOGGER.warning("Failed to publish MQTT command to %s: %s", topic, err)
+            _LOGGER.warning("Failed to publish WSS MQTT command to %s: %s", topic, err)
             self._connected = False
             return False
 
     async def async_close(self) -> None:
         """Close the MQTT connection."""
+        self._connected = False
+        if self._writer and not self._writer.is_closing():
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+        self._writer = None
+        self._reader = None
         self._connected = False
         if self._writer and not self._writer.is_closing():
             try:
@@ -546,11 +602,15 @@ class TesyCloudClient:
                 "app_id": f"ha_{uuid.uuid4().hex[:7]}",
                 **mqtt_payload,
             }
+            mac_colons = self._format_mac_with_colons(raw_mac)
+            topic_colons = f"v1/{mac_colons}/request/{model}/{token}/{mqtt_command}"
             topic_upper = f"v1/{clean_mac_upper}/request/{model}/{token}/{mqtt_command}"
             topic_lower = f"v1/{clean_mac_lower}/request/{model}/{token}/{mqtt_command}"
+
+            res_c = await self.mqtt_client.async_publish(topic_colons, msg_payload)
             res_u = await self.mqtt_client.async_publish(topic_upper, msg_payload)
             res_l = await self.mqtt_client.async_publish(topic_lower, msg_payload)
-            mqtt_ok = res_u or res_l
+            mqtt_ok = res_c or res_u or res_l
 
         return app_log_ok or rest_ok or mqtt_ok
 
