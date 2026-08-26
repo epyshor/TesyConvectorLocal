@@ -454,6 +454,54 @@ class TesyCloudClient:
 
         raise TesyCloudError(f"Device ID {device_id} not found in MyTESY account")
 
+    def _format_mac_with_colons(self, mac_str: str) -> str:
+        """Format MAC address as XX:XX:XX:XX:XX:XX uppercase (as expected by MyTESY app-log endpoint)."""
+        clean = str(mac_str).replace(":", "").replace("-", "").strip().upper()
+        if len(clean) == 12:
+            return ":".join(clean[i:i+2] for i in range(0, 12, 2))
+        return str(mac_str).upper()
+
+    async def _async_send_app_log(
+        self, device_id: str, dev_info: dict[str, Any], command: str, payload_dict: dict[str, Any]
+    ) -> bool:
+        """Send command to official MyTESY V4 REST app-log endpoint reverse-engineered from MyTESY app."""
+        session = await self._get_session()
+
+        raw_mac = dev_info.get("mac") or dev_info.get("id") or str(device_id)
+        mac_formatted = self._format_mac_with_colons(raw_mac)
+
+        user_id_val: Any = self.userid
+        if isinstance(self.userid, str) and self.userid.isdigit():
+            user_id_val = int(self.userid)
+
+        payload = {
+            "command": command,
+            "lang": "en",
+            "mac": mac_formatted,
+            "payload": payload_dict,
+            "userEmail": self.username,
+            "userID": user_id_val,
+            "userPass": self.password,
+        }
+
+        endpoints = [
+            f"{CLOUD_BASE_URL}/app-log",
+            f"{CLOUD_BASE_URL}/user-device-log",
+        ]
+
+        success = False
+        for endpoint in endpoints:
+            try:
+                async with asyncio.timeout(REQUEST_TIMEOUT):
+                    async with session.post(endpoint, json=payload, headers=HEADERS) as response:
+                        _LOGGER.debug("REST app-log %s command '%s' payload %s status: %s", endpoint, command, payload_dict, response.status)
+                        if response.status in (200, 201):
+                            success = True
+            except Exception as err:
+                _LOGGER.warning("REST app-log error for %s command '%s': %s", endpoint, command, err)
+
+        return success
+
     async def async_send_command(
         self,
         device_id: str,
@@ -462,7 +510,7 @@ class TesyCloudClient:
         rest_command: str | None = None,
         rest_value: Any = None,
     ) -> bool:
-        """Send command via Tesy REST API and MQTT broker."""
+        """Send command via official MyTESY Cloud app-log REST endpoint and MQTT broker."""
         dev_info = self._cached_devices.get(str(device_id))
         if not dev_info:
             try:
@@ -470,12 +518,10 @@ class TesyCloudClient:
             except Exception:
                 dev_info = {}
 
-        raw_mac = dev_info.get("mac") or str(device_id)
-        clean_mac_upper = str(raw_mac).replace(":", "").upper()
-        clean_mac_lower = str(raw_mac).replace(":", "").lower()
-        model = dev_info.get("model") or "cn05uv"
-        token = dev_info.get("token")
+        # 1. Primary Method: Official MyTESY V4 REST app-log API (exact payload format from MyTESY web app)
+        app_log_ok = await self._async_send_app_log(device_id, dev_info, mqtt_command, mqtt_payload)
 
+        # Legacy fallback REST endpoint
         if rest_command is None:
             rest_command = mqtt_command
         if rest_value is None and "status" in mqtt_payload:
@@ -485,28 +531,28 @@ class TesyCloudClient:
         if rest_value is None and "mode" in mqtt_payload:
             rest_value = mqtt_payload["mode"]
 
-        # 1. Primary Method: Update MyTESY Cloud REST API database
         rest_ok = await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
 
-        # 2. Secondary Method: Also publish via MQTT with clean MAC (no colons) if token exists
+        # 2. Secondary Method: MQTT with clean MAC format
+        raw_mac = dev_info.get("mac") or str(device_id)
+        clean_mac_upper = str(raw_mac).replace(":", "").upper()
+        clean_mac_lower = str(raw_mac).replace(":", "").lower()
+        model = dev_info.get("model") or "cn05uv"
+        token = dev_info.get("token")
+
         mqtt_ok = False
         if token:
             msg_payload = {
                 "app_id": f"ha_{uuid.uuid4().hex[:7]}",
                 **mqtt_payload,
             }
-            # Try both uppercase and lowercase clean MAC topics
             topic_upper = f"v1/{clean_mac_upper}/request/{model}/{token}/{mqtt_command}"
             topic_lower = f"v1/{clean_mac_lower}/request/{model}/{token}/{mqtt_command}"
-            topic_raw = f"v1/{raw_mac}/request/{model}/{token}/{mqtt_command}"
-
             res_u = await self.mqtt_client.async_publish(topic_upper, msg_payload)
             res_l = await self.mqtt_client.async_publish(topic_lower, msg_payload)
-            if raw_mac != clean_mac_upper:
-                await self.mqtt_client.async_publish(topic_raw, msg_payload)
             mqtt_ok = res_u or res_l
 
-        return rest_ok or mqtt_ok
+        return app_log_ok or rest_ok or mqtt_ok
 
     async def _async_send_rest_fallback(
         self, device_id: str, dev_info: dict[str, Any], command: str, value: Any
