@@ -638,9 +638,9 @@ class TesyCloudClient:
         )
 
     async def async_set_temperature(self, device_id: str, temp: float | int) -> bool:
-        """Set target temperature (sets mode to manual first then sets temp)."""
+        """Set target temperature (sets mode to manual first then sets setComfortTemp and setTemp)."""
         target = round(float(temp))
-        # Ensure manual mode
+        # 1. Ensure manual mode
         await self.async_send_command(
             device_id,
             mqtt_command="setMode",
@@ -648,6 +648,15 @@ class TesyCloudClient:
             rest_command="mode",
             rest_value="manual",
         )
+        # 2. Set comfort mode target temperature (from official MyTESY app payload capture)
+        await self.async_send_command(
+            device_id,
+            mqtt_command="setComfortTemp",
+            mqtt_payload={"temp": target},
+            rest_command="setComfortTemp",
+            rest_value=target,
+        )
+        # 3. Set main target temperature
         return await self.async_send_command(
             device_id,
             mqtt_command="setTemp",
