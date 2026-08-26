@@ -20,7 +20,7 @@ CONF_UPDATE_INTERVAL = "update_interval"
 
 # Default values
 DEFAULT_NAME = "Tesy Convector"
-DEFAULT_UPDATE_INTERVAL = 15  # seconds
+DEFAULT_UPDATE_INTERVAL = 20  # seconds
 MIN_UPDATE_INTERVAL = 5
 MAX_UPDATE_INTERVAL = 120
 
