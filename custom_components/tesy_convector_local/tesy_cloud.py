@@ -158,47 +158,44 @@ class TesyMqttClient:
                 return False
 
     async def async_publish(self, topic: str, payload_data: dict[str, Any]) -> bool:
-        """Publish a command message to Tesy WSS MQTT topic."""
-        try:
-            if not self._connected:
-                ok = await self.async_connect()
-                if not ok:
+        """Publish a command message to Tesy WSS MQTT topic with auto-reconnect."""
+        topic_bytes = topic.encode("utf-8")
+        payload_str = json.dumps(payload_data)
+        payload_bytes = payload_str.encode("utf-8")
+
+        var_header = struct.pack("!H", len(topic_bytes)) + topic_bytes
+        rem_len = len(var_header) + len(payload_bytes)
+        mqtt_pub_pkt = bytes([0x30]) + _encode_remaining_length(rem_len) + var_header + payload_bytes
+        ws_frame = _make_ws_frame(mqtt_pub_pkt)
+
+        for attempt in range(2):
+            try:
+                if not self._connected or not self._writer or self._writer.is_closing():
+                    ok = await self.async_connect()
+                    if not ok:
+                        if attempt == 0:
+                            continue
+                        return False
+
+                async with self._lock:
+                    if self._writer and not self._writer.is_closing():
+                        self._writer.write(ws_frame)
+                        await self._writer.drain()
+                        _LOGGER.info("Published WSS MQTT command to topic %s: %s", topic, payload_str)
+                        return True
+                    else:
+                        self._connected = False
+
+            except Exception as err:
+                _LOGGER.warning("Failed to publish WSS MQTT command (attempt %d/2) to %s: %s", attempt + 1, topic, err)
+                await self.async_close()
+                if attempt == 1:
                     return False
 
-            topic_bytes = topic.encode("utf-8")
-            payload_str = json.dumps(payload_data)
-            payload_bytes = payload_str.encode("utf-8")
-
-            var_header = struct.pack("!H", len(topic_bytes)) + topic_bytes
-            rem_len = len(var_header) + len(payload_bytes)
-            mqtt_pub_pkt = bytes([0x30]) + _encode_remaining_length(rem_len) + var_header + payload_bytes
-
-            async with self._lock:
-                if self._writer and not self._writer.is_closing():
-                    self._writer.write(_make_ws_frame(mqtt_pub_pkt))
-                    await self._writer.drain()
-                    _LOGGER.info("Published WSS MQTT command to topic %s: %s", topic, payload_str)
-                    return True
-                else:
-                    self._connected = False
-                    return False
-
-        except Exception as err:
-            _LOGGER.warning("Failed to publish WSS MQTT command to %s: %s", topic, err)
-            self._connected = False
-            return False
+        return False
 
     async def async_close(self) -> None:
         """Close the MQTT connection."""
-        self._connected = False
-        if self._writer and not self._writer.is_closing():
-            try:
-                self._writer.close()
-                await self._writer.wait_closed()
-            except Exception:
-                pass
-        self._writer = None
-        self._reader = None
         self._connected = False
         if self._writer and not self._writer.is_closing():
             try:
@@ -566,7 +563,7 @@ class TesyCloudClient:
         rest_command: str | None = None,
         rest_value: Any = None,
     ) -> bool:
-        """Send command via official MyTESY Cloud app-log REST endpoint and MQTT broker."""
+        """Send command via official MyTESY WSS MQTT broker (milliseconds) with REST fallback."""
         dev_info = self._cached_devices.get(str(device_id))
         if not dev_info:
             try:
@@ -574,28 +571,13 @@ class TesyCloudClient:
             except Exception:
                 dev_info = {}
 
-        # 1. Primary Method: Official MyTESY V4 REST app-log API (exact payload format from MyTESY web app)
-        app_log_ok = await self._async_send_app_log(device_id, dev_info, mqtt_command, mqtt_payload)
-
-        # Legacy fallback REST endpoint
-        if rest_command is None:
-            rest_command = mqtt_command
-        if rest_value is None and "status" in mqtt_payload:
-            rest_value = mqtt_payload["status"]
-        if rest_value is None and "temp" in mqtt_payload:
-            rest_value = mqtt_payload["temp"]
-        if rest_value is None and "mode" in mqtt_payload:
-            rest_value = mqtt_payload["mode"]
-
-        rest_ok = await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
-
-        # 2. Secondary Method: MQTT with clean MAC format
         raw_mac = dev_info.get("mac") or str(device_id)
         clean_mac_upper = str(raw_mac).replace(":", "").upper()
         clean_mac_lower = str(raw_mac).replace(":", "").lower()
         model = dev_info.get("model") or "cn05uv"
         token = dev_info.get("token")
 
+        # 1. Primary Method: WSS MQTT (Instant execution in milliseconds via wss://mqtt.tesy.com:8083/mqtt)
         mqtt_ok = False
         if token:
             msg_payload = {
@@ -612,7 +594,32 @@ class TesyCloudClient:
             res_l = await self.mqtt_client.async_publish(topic_lower, msg_payload)
             mqtt_ok = res_c or res_u or res_l
 
-        return app_log_ok or rest_ok or mqtt_ok
+            # Schedule REST app-log in background to sync official app status without delaying UI
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._async_send_app_log(device_id, dev_info, mqtt_command, mqtt_payload))
+            except Exception:
+                pass
+
+            if mqtt_ok:
+                return True
+
+        # 2. Secondary Method: Official MyTESY V4 REST app-log API (if MQTT unavailable or device has no token)
+        app_log_ok = await self._async_send_app_log(device_id, dev_info, mqtt_command, mqtt_payload)
+        if app_log_ok:
+            return True
+
+        # 3. Tertiary Method: Legacy REST endpoint fallback
+        if rest_command is None:
+            rest_command = mqtt_command
+        if rest_value is None and "status" in mqtt_payload:
+            rest_value = mqtt_payload["status"]
+        if rest_value is None and "temp" in mqtt_payload:
+            rest_value = mqtt_payload["temp"]
+        if rest_value is None and "mode" in mqtt_payload:
+            rest_value = mqtt_payload["mode"]
+
+        return await self._async_send_rest_fallback(device_id, dev_info, rest_command, rest_value)
 
     async def _async_send_rest_fallback(
         self, device_id: str, dev_info: dict[str, Any], command: str, value: Any
