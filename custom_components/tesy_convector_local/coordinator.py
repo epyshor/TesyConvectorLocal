@@ -54,6 +54,15 @@ def _extract_payload_val(container: Any, key: str, fallback: Any = None) -> Any:
     return item if item is not None else fallback
 
 
+def _first_val(container: Any, keys: tuple[str, ...], fallback: Any = None) -> Any:
+    """Return the first present value among several key spellings (e.g. 'setAntiFrost' / 'antiFrost')."""
+    for key in keys:
+        val = _extract_payload_val(container, key)
+        if val is not None:
+            return val
+    return fallback
+
+
 class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching Tesy Convector data from Cloud or Local."""
 
@@ -190,19 +199,19 @@ class TesyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "is_on": _extract_payload_val(payload, "onOff", "off") == "on",
             "target_temp": float(target_t) if target_t is not None else None,
             "current_temp": float(current_t) if current_t is not None else None,
-            "mode": _extract_payload_val(payload, "mode", "manual"),
+            "mode": _first_val(payload, ("mode", "setMode"), "manual"),
             "boost": False,
             "heater_state": "HEATING" if _extract_payload_val(payload, "onOff", "off") == "on" else "READY",
-            "lock_device": _extract_payload_val(payload, "lockDevice", "off") == "on",
-            "anti_frost": _extract_payload_val(payload, "antiFrost", "off") == "on",
-            "adaptive_start": _extract_payload_val(payload, "adaptiveStart", "off") == "on",
-            "opened_window": _extract_payload_val(payload, "openedWindow", "off") == "on",
-            "uv": _extract_payload_val(payload, "uv", "off") == "on",
+            "lock_device": _first_val(payload, ("lockDevice", "setLockDevice"), "off") == "on",
+            "anti_frost": _first_val(payload, ("antiFrost", "setAntiFrost"), "off") == "on",
+            "adaptive_start": _first_val(payload, ("adaptiveStart", "setAdaptiveStart"), "off") == "on",
+            "opened_window": _first_val(payload, ("openedWindow", "setOpenedWindow"), "off") == "on",
+            "uv": _first_val(payload, ("uv", "setUV"), "off") == "on",
             "model": payload.get("model") or "Convector Heater",
             "name": self.device_name,
             "sw_version": payload.get("version") or "Local API",
             "device_id": self.device_id,
-            "temp_correction": 0.0,
+            "temp_correction": float(_first_val(payload, ("tCorrection", "setTCorrection"), 0.0) or 0.0),
         }
         return parsed
 
